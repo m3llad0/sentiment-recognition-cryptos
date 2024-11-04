@@ -1,18 +1,23 @@
 # This is a sample Python script.
+from itertools import count
 
 # Press Shift+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 import pandas as pd
 import zstandard
-import os
 import json
-from collections import defaultdict
 from datetime import datetime
-import logging.handlers
 import re
 import spell_check
 import nltk
 from tqdm import tqdm
+from textblob import TextBlob
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 FIRST_TRY = True
 SECOND_TRY = False
@@ -124,12 +129,15 @@ def clean_body(text):
         return cleaned_text.strip()  # Remove leading/trailing spaces
     return text  # Return original if not a string
 
-SUBREDDIT_NAME = [ "ethereum", "Bitcoin" ]
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
+def get_sentiment(text):
+    if isinstance(text, str):  # Check if the input is a string
+        return TextBlob(text).sentiment.polarity
+    else:
+        return None  # Return None for non-string inputs
+
+def get_analysis():
     nltk.download('punkt_tab')
     nltk.download('wordnet')
-#    write_my_file_to_csv()
     for COMMON_NAME in SUBREDDIT_NAME:
         comments_df = pd.read_csv('output/' + COMMON_NAME + '_comments_clean_reduced_final.csv')
         submissions_df = pd.read_csv('output/' + COMMON_NAME + '_submissions_clean_reduced_final.csv')
@@ -160,6 +168,99 @@ if __name__ == '__main__':
         # Sort the combined DataFrame by 'created_utc'
         combined_df = combined_df.sort_values(by='created_utc')
 
+        combined_df['sentiment'] = combined_df['body'].progress_apply(get_sentiment)
+
         # Save the combined DataFrame to a new CSV file
-        combined_df.to_csv('output/D_' + COMMON_NAME + '_combined_final.csv', index=False)
+        combined_df.to_csv('output/E_' + COMMON_NAME + '_combined_final.csv', index=False)
         print(f'End Number of elements in the combined DataFrame: {len(combined_df)}')
+
+
+def get_graphs_and_all():
+#    for COIN in SUBREDDIT_NAME:
+#        print(f"Loading {COIN} in csv")
+    COIN = 'twitter'
+    NOT_PROCESSED = False
+    # Load data
+    if NOT_PROCESSED:
+        df = pd.read_csv("output/latest/E_" + COIN + "_combined_final.csv")
+        price_df = pd.read_csv("cryptoPrices/" + COIN + "_price.csv")
+
+        # Filter sentiments
+        df = df[(df['sentiment'] > 0.5) | (df['sentiment'] < -0.5)]
+
+        # Prepare date and average sentiment
+        df['date'] = pd.to_datetime(df['created_utc'], unit='s').dt.date
+        df['date'] = pd.to_datetime(df['date'])
+
+        # Set the 'date' column as the index for grouping
+        df.set_index('date', inplace=True)
+
+        # Group by week and calculate average sentiment
+        sentiment_df = df.resample('W')['sentiment'].mean().reset_index()
+        sentiment_df.columns = ['date', 'average_sentiment']
+
+        # Reset the index of sentiment_df to merge properly
+        sentiment_df['date'] = pd.to_datetime(sentiment_df['date'])
+
+        # Merge price and sentiment DataFrames
+        price_df['Date'] = pd.to_datetime(price_df['Date'])
+        merged_df = pd.merge(price_df, sentiment_df, left_on='Date', right_on='date', how='outer')
+
+        merged_df = merged_df[['Date', 'Price', 'average_sentiment']]
+
+    else:
+        merged_df = pd.read_csv('output/latest/E_twitter_combined_final.csv')
+
+    # Drop rows with missing values
+    merged_df = merged_df.dropna(subset=['avg_sentiment', 'Price'])
+#    merged_df['Price'] = merged_df['Price'].str.replace(',', '').astype(float)
+
+    merged_df.to_csv("output/latest/merged_dataframes_" + COIN + ".csv")
+
+    merged_df['date'] = pd.to_datetime(merged_df['date'])
+
+    # Calculate the difference in price
+    merged_df['Price_Diff'] = merged_df['Price'].diff()
+
+    # Drop the first row which will have a NaN value in Price_Diff
+    merged_df = merged_df.dropna()
+
+    # Prepare the features and target variable
+    X = merged_df[['avg_sentiment']]
+    y = merged_df['Price']
+
+    # Normalize the data
+#    scaler = MinMaxScaler()
+#    X_normalized = scaler.fit_transform(X)
+
+    # Split the data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=20)
+
+    # Train the model
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+
+    mse = mean_squared_error(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    r2 = r2_score(y_test, y_pred)
+
+    plt.scatter(y_test, y_pred)
+    plt.xlabel('Actual Values')
+    plt.ylabel('Predicted Values')
+    plt.title('Actual vs Predicted')
+    plt.plot([y.min(), y.max()], [y.min(), y.max()], 'k--', lw=2)
+    plt.show()
+    plt.savefig('output/latest/myGraph_' + COIN + '.png')
+
+    print(f'MSE: {mse}, MAE: {mae}, R^2: {r2}')
+    # Save the DataFrame to a CSV file
+    merged_df.to_csv('output/latest/end_data_' + COIN + '.csv', index=False)
+
+SUBREDDIT_NAME = [ "ethereum", "Bitcoin" ]
+# Press the green button in the gutter to run the script.
+if __name__ == '__main__':
+#    write_my_file_to_csv()
+#    get_analysis()
+    get_graphs_and_all()
