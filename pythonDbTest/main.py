@@ -8,6 +8,9 @@ import zstandard
 import json
 from datetime import datetime
 import re
+
+from sklearn.tree import DecisionTreeRegressor
+
 import spell_check
 import nltk
 from tqdm import tqdm
@@ -18,6 +21,12 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
+
+from sklearn.datasets import make_regression
+
 
 FIRST_TRY = True
 SECOND_TRY = False
@@ -176,7 +185,7 @@ def get_analysis():
 
 
 def get_graphs_and_all():
-#    for COIN in SUBREDDIT_NAME:
+#   for COIN in SUBREDDIT_NAME:
 #        print(f"Loading {COIN} in csv")
     COIN = 'twitter'
     NOT_PROCESSED = False
@@ -206,57 +215,91 @@ def get_graphs_and_all():
         price_df['Date'] = pd.to_datetime(price_df['Date'])
         merged_df = pd.merge(price_df, sentiment_df, left_on='Date', right_on='date', how='outer')
 
-        merged_df = merged_df[['Date', 'Price', 'average_sentiment']]
+        merged_df = merged_df[['date', 'Price', 'average_sentiment']]
 
     else:
         merged_df = pd.read_csv('output/latest/E_twitter_combined_final.csv')
 
-    # Drop rows with missing values
-    merged_df = merged_df.dropna(subset=['avg_sentiment', 'Price'])
-#    merged_df['Price'] = merged_df['Price'].str.replace(',', '').astype(float)
+        # Drop rows with missing values
+        merged_df = merged_df.dropna(subset=['avg_sentiment', 'Price'])
+#        merged_df['Price'] = merged_df['Price'].str.replace(',', '').astype(float)
 
-    merged_df.to_csv("output/latest/merged_dataframes_" + COIN + ".csv")
+        merged_df.to_csv("output/latest/merged_dataframes_" + COIN + ".csv")
 
-    merged_df['date'] = pd.to_datetime(merged_df['date'])
+        merged_df['date'] = pd.to_datetime(merged_df['date'])
 
-    # Calculate the difference in price
-    merged_df['Price_Diff'] = merged_df['Price'].diff()
+        # Calculate the difference in price
+        merged_df['Price_Diff'] = merged_df['Price'].diff()
 
-    # Drop the first row which will have a NaN value in Price_Diff
-    merged_df = merged_df.dropna()
+        # Drop the first row which will have a NaN value in Price_Diff
+        merged_df = merged_df.dropna()
 
-    # Prepare the features and target variable
-    X = merged_df[['avg_sentiment']]
-    y = merged_df['Price']
+        # Prepare the features and target variable
+        X = merged_df[['avg_sentiment']]
+        y = merged_df['Price']
 
-    # Normalize the data
-#    scaler = MinMaxScaler()
-#    X_normalized = scaler.fit_transform(X)
+        # Normalize the data
+        scaler = MinMaxScaler()
+        X_normalized = scaler.fit_transform(X)
 
-    # Split the data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=20)
+        # Split the data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(X_normalized, y, test_size=0.2, random_state=20)
 
-    # Train the model
-    model = LinearRegression()
-    model.fit(X_train, y_train)
+        params_dt = {
+            'criterion': ['squared_error'],  # Use 'squared_error' for regression
+            'splitter': ['best', 'random'],
+            'max_depth': [None, 10, 20, 30],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4]
+        }
+        # Define the KNN model and hyperparameters
+        params_knn = {
+        'n_neighbors': [1, 3, 5, 7, 9],  # Number of neighbors
+        'weights': ['uniform', 'distance'],  # Weight function
+        'algorithm': ['auto', 'ball_tree', 'kd_tree', 'brute'],  # Algorithm used to compute the nearest neighbors
+        }
+        params_rf = {
+        'n_estimators': [50, 100, 200],  # Number of trees in the forest
+        'max_features': ['auto', 'sqrt'],  # Number of features to consider at every split
+        'max_depth': [None, 10, 20, 30],  # Maximum depth of the tree
+        'min_samples_split': [2, 5, 10],  # Minimum number of samples required to split an internal node
+        'min_samples_leaf': [1, 2, 4]     # Minimum number of samples required to be at a leaf node
+        }
+        rf_regressor = RandomForestRegressor(random_state=42)
+        knn_regressor = KNeighborsRegressor()
+        dt_regressor = DecisionTreeRegressor(random_state=42)
 
-    y_pred = model.predict(X_test)
+        # Set up GridSearchCV with r2 scoring
+        grid_search = GridSearchCV(estimator=rf_regressor, param_grid=params_rf,
+                                   scoring='r2', cv=5, n_jobs=-1)
 
-    mse = mean_squared_error(y_test, y_pred)
-    mae = mean_absolute_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
+        # Fit the model
+        grid_search.fit(X_train, y_train)
 
-    plt.scatter(y_test, y_pred)
-    plt.xlabel('Actual Values')
-    plt.ylabel('Predicted Values')
-    plt.title('Actual vs Predicted')
-    plt.plot([y.min(), y.max()], [y.min(), y.max()], 'k--', lw=2)
-    plt.show()
-    plt.savefig('output/latest/myGraph_' + COIN + '.png')
+        # Get the best parameters and best r2 score
+        best_params = grid_search.best_params_
+        best_r2 = grid_search.best_score_
 
-    print(f'MSE: {mse}, MAE: {mae}, R^2: {r2}')
-    # Save the DataFrame to a CSV file
-    merged_df.to_csv('output/latest/end_data_' + COIN + '.csv', index=False)
+        print("Best Parameters:", best_params)
+        print("Best R^2 Score:", best_r2)
+
+        # Optionally, evaluate on the test set
+        best_model = grid_search.best_estimator_
+        y_pred = best_model.predict(X_test)
+        test_r2 = r2_score(y_test, y_pred)
+        print("Test R^2 Score:", test_r2)
+        # Optionally, evaluate on the test set
+
+        plt.scatter(y_test, y_pred)
+        plt.xlabel('Actual Values')
+        plt.ylabel('Predicted Values')
+        plt.title('Actual vs Predicted')
+        plt.plot([y.min(), y.max()], [y.min(), y.max()], 'k--', lw=2)
+        plt.show()
+        plt.savefig('output/latest/myGraph_' + COIN + '.png')
+
+        # Save the DataFrame to a CSV file
+        merged_df.to_csv('output/latest/end_data_' + COIN + '.csv', index=False)
 
 SUBREDDIT_NAME = [ "ethereum", "Bitcoin" ]
 # Press the green button in the gutter to run the script.
